@@ -38,6 +38,16 @@
 - 批次状态：`partial_bank`、`partial_ledger`、`ready`、`matched`。
 - 原因码表在 `app/reasons.py`，页面、CSV 与清单共用同一份名称。
 
+## 入账（M8）
+
+- 方案版本号 `POSTING_SCHEME_VERSION`（`app/config.py`）是页面、CSV、清单与落库的唯一版本来源；旧批次版本不一致时 `/api/postings` 标记 `stale`。
+- 一个匹配组一张凭证（`journals` 表，凭证号 `jrnl-` 前缀，由 match_id 确定性派生），分录在 `journal_lines` 表，方案状态在 `posting_state` 表；三表与 matches 同事务先删后插。
+- 分录五类：`bank` 银行存款、`voucher` 待核销往来（账簿凭证反向核销）、`fee_cash` 银行存款-手续费（贷）、`fee_expense` 手续费费用（借）、`gap` 容差尾差；每张凭证 2–5 条。
+- 借贷栏 `debit`/`credit` 存非负 Decimal 字符串，另存 `signed`（借正贷负）；全凭证 `sum(signed)=0`。
+- `refs_json` 保留该分录核销的全部原始流水号/凭证号；硬约束：分录金额恒等于 refs 来源对象金额之和，禁止跨对象轧差。
+- 手续费按银行账户实际发生额出现金，费用科目一次入费用，不并进本金分录；组内容差（银行签向 − 账簿签向）挂 `671101`，容差为 0 不出尾差分录。
+- 科目登记只在 `app/config.py`：`BANK_ACCOUNT_SUBJECTS`、`CLEARING_SUBJECT`、`FEE_EXPENSE_SUBJECT`、`GAP_LOSS_SUBJECT`。
+
 ## 运行清单
 
 - `run_id` 由规则版本、两侧文件 sha256、参数共同计算，同一组输入重跑得到同一 `run_id`。

@@ -13,6 +13,8 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+from .manifest import utc_now_iso
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
@@ -85,6 +87,46 @@ CREATE TABLE IF NOT EXISTS matches (
     ledger_signed TEXT NOT NULL DEFAULT '0'
 );
 CREATE INDEX IF NOT EXISTS idx_matches_run ON matches(run_id, tier);
+CREATE TABLE IF NOT EXISTS posting_state (
+    run_id TEXT PRIMARY KEY,
+    scheme_version TEXT NOT NULL DEFAULT '',
+    journal_count INTEGER NOT NULL DEFAULT 0,
+    line_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS journals (
+    run_id TEXT NOT NULL,
+    journal_id TEXT NOT NULL,
+    match_id TEXT NOT NULL,
+    tier INTEGER NOT NULL DEFAULT 0,
+    line_count INTEGER NOT NULL DEFAULT 0,
+    bank_refs TEXT NOT NULL DEFAULT '[]',
+    ledger_refs TEXT NOT NULL DEFAULT '[]',
+    debit_total TEXT NOT NULL DEFAULT '0',
+    credit_total TEXT NOT NULL DEFAULT '0',
+    amount_total TEXT NOT NULL DEFAULT '0',
+    posted_at TEXT NOT NULL DEFAULT '',
+    scheme_version TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (run_id, journal_id)
+);
+CREATE INDEX IF NOT EXISTS idx_journals_run ON journals(run_id, tier);
+CREATE TABLE IF NOT EXISTS journal_lines (
+    run_id TEXT NOT NULL,
+    journal_id TEXT NOT NULL,
+    line_no INTEGER NOT NULL,
+    line_id TEXT NOT NULL,
+    line_type TEXT NOT NULL,
+    subject_code TEXT NOT NULL DEFAULT '',
+    subject_name TEXT NOT NULL DEFAULT '',
+    debit TEXT NOT NULL DEFAULT '0',
+    credit TEXT NOT NULL DEFAULT '0',
+    signed TEXT NOT NULL DEFAULT '0',
+    ref_side TEXT NOT NULL DEFAULT '',
+    refs_json TEXT NOT NULL DEFAULT '[]',
+    memo TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (run_id, line_id)
+);
+CREATE INDEX IF NOT EXISTS idx_journal_lines_run ON journal_lines(run_id, journal_id, line_no);
 """
 
 RUN_COLUMNS = (
@@ -144,14 +186,17 @@ class Store:
         return [self._run_row(row) for row in rows]
 
     def save_run(self, run: dict, records: list[dict], candidates: list[dict],
-                 matches: list[dict]) -> None:
+                 matches: list[dict], journals: list[dict] | None = None,
+                 posting_scheme: str = "") -> None:
         params_json = json.dumps(run.get("params", {}), ensure_ascii=False, sort_keys=True)
         states_json = json.dumps(run.get("input_states", {}), ensure_ascii=False)
+        journals = journals or []
         with self._conn() as conn:
             run_id = run["run_id"]
             conn.execute("DELETE FROM records WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM candidates WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM matches WHERE run_id = ?", (run_id,))
+            self._replace_postings(conn, run_id, journals, posting_scheme)
             conn.execute(
                 """INSERT OR REPLACE INTO runs (
                     run_id, created_at, rule_version, params_json, bank_sha256, ledger_sha256,
@@ -310,3 +355,116 @@ class Store:
                     for m in matches
                 ],
             )
+
+    # ---------- 入账凭证 ----------
+    @staticmethod
+    def _replace_postings(conn, run_id: str, journals: list[dict],
+                          scheme_version: str) -> None:
+        """在调用方事务内整体替换入账凭证：先删后插，失败随事务回滚。
+
+        同一 run_id 重跑命中同一批主键，不会多出凭证/分录；三张表同事务，
+        中断时整体回滚，旧版完整方案仍在（或整批缺失可按确定性方案重建）。
+        """
+        conn.execute("DELETE FROM journal_lines WHERE run_id = ?", (run_id,))
+        conn.execute("DELETE FROM journals WHERE run_id = ?", (run_id,))
+        conn.execute("DELETE FROM posting_state WHERE run_id = ?", (run_id,))
+        line_count = 0
+        for journal in journals:
+            conn.execute(
+                """INSERT INTO journals (run_id, journal_id, match_id, tier, line_count,
+                    bank_refs, ledger_refs, debit_total, credit_total, amount_total,
+                    posted_at, scheme_version)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    run_id, journal["journal_id"], journal["match_id"], journal["tier"],
+                    journal["line_count"],
+                    json.dumps(journal["bank_refs"], ensure_ascii=False),
+                    json.dumps(journal["ledger_refs"], ensure_ascii=False),
+                    str(journal["debit_total"]), str(journal["credit_total"]),
+                    str(journal["amount_total"]), journal.get("posted_at", ""),
+                    journal.get("scheme_version", scheme_version),
+                ),
+            )
+            for line in journal["lines"]:
+                line_count += 1
+                conn.execute(
+                    """INSERT INTO journal_lines (run_id, journal_id, line_no, line_id,
+                        line_type, subject_code, subject_name, debit, credit, signed,
+                        ref_side, refs_json, memo)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        run_id, journal["journal_id"], line["line_no"], line["line_id"],
+                        line["line_type"], line["subject_code"], line["subject_name"],
+                        str(line["debit"]), str(line["credit"]), str(line["signed"]),
+                        line.get("ref_side", ""),
+                        json.dumps(line["refs"], ensure_ascii=False),
+                        line.get("memo", ""),
+                    ),
+                )
+        conn.execute(
+            """INSERT INTO posting_state (run_id, scheme_version, journal_count,
+                line_count, updated_at) VALUES (?,?,?,?,?)""",
+            (
+                run_id, scheme_version, len(journals), line_count,
+                utc_now_iso(),
+            ),
+        )
+
+    def replace_postings(self, run_id: str, journals: list[dict],
+                         scheme_version: str) -> None:
+        with self._conn() as conn:
+            self._replace_postings(conn, run_id, journals, scheme_version)
+
+    def replace_matches_and_postings(self, run_id: str, matches: list[dict],
+                                     journals: list[dict],
+                                     scheme_version: str) -> None:
+        """匹配重求解与入账重建放同一事务，避免凭证指向已失效的匹配组。"""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM matches WHERE run_id = ?", (run_id,))
+            conn.executemany(
+                """INSERT INTO matches (run_id, match_id, tier, bank_ids, ledger_ids,
+                    bank_sum, ledger_sum, diff, day_gap, fee_alloc, fee_actual,
+                    bank_signed, ledger_signed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [
+                    (
+                        run_id, m["match_id"], m["tier"],
+                        json.dumps(m["bank_ids"], ensure_ascii=False),
+                        json.dumps(m["ledger_ids"], ensure_ascii=False),
+                        str(m["bank_sum"]), str(m["ledger_sum"]), str(m["diff"]), m["day_gap"],
+                        str(m.get("fee_alloc", "0")), str(m.get("fee_actual", "0")),
+                        str(m.get("bank_signed", "0")), str(m.get("ledger_signed", "0")),
+                    )
+                    for m in matches
+                ],
+            )
+            self._replace_postings(conn, run_id, journals, scheme_version)
+
+    def posting_state(self, run_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM posting_state WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def journals(self, run_id: str) -> list[dict]:
+        with self._conn() as conn:
+            journal_rows = conn.execute(
+                "SELECT * FROM journals WHERE run_id = ? ORDER BY tier, journal_id", (run_id,)
+            ).fetchall()
+            line_rows = conn.execute(
+                "SELECT * FROM journal_lines WHERE run_id = ? ORDER BY journal_id, line_no",
+                (run_id,),
+            ).fetchall()
+        lines_by_journal: dict[str, list[dict]] = {}
+        for row in line_rows:
+            item = dict(row)
+            item["refs"] = json.loads(item.pop("refs_json") or "[]")
+            lines_by_journal.setdefault(item["journal_id"], []).append(item)
+        out = []
+        for row in journal_rows:
+            journal = dict(row)
+            journal["bank_refs"] = json.loads(journal.pop("bank_refs") or "[]")
+            journal["ledger_refs"] = json.loads(journal.pop("ledger_refs") or "[]")
+            journal["lines"] = lines_by_journal.get(journal["journal_id"], [])
+            out.append(journal)
+        return out

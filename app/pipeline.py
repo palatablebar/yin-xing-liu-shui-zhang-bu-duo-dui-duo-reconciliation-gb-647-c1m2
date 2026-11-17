@@ -17,6 +17,7 @@ from .modules.m3_quality import rules as quality_rules
 from .modules.m4_candidates import candidate as candidate_mod
 from .modules.m5_matching import solve as solve_mod
 from .modules.m6_diff import differences as differences_mod
+from .modules.m8_posting import posting as posting_mod
 
 DEFAULT_BANK = "bank_statement_dirty.csv"
 DEFAULT_LEDGER = "ledger_book_dirty.csv"
@@ -118,10 +119,14 @@ def run_demo(settings, store, bank_name: str = DEFAULT_BANK,
     records = bank_records + ledger_records
     candidates = candidate_mod.build(records, settings)
     matches = solve_mod.solve(candidates, records, settings)
+    # 完整入账方案与匹配结果在同一事务落库，中断整体回滚，不残留半成品。
+    journals = posting_mod.build_postings(matches, records)
+    posting_mod.assert_balanced(journals)
     duration = int((time.monotonic() - started) * 1000)
     run = _run(settings, _side_meta(parsed_bank), _side_meta(parsed_ledger),
                records, "matched", duration)
-    store.save_run(run, records, candidates, matches)
+    store.save_run(run, records, candidates, matches, journals,
+                   posting_mod.scheme_version())
     return _summary(settings, store.get_run(run["run_id"]), records, candidates, matches)
 
 
@@ -163,7 +168,11 @@ def import_side(settings, store, side: str, filename: str, raw: bytes) -> dict:
     status = "matched" if both else f"partial_{side}"
     duration = int((time.monotonic() - started) * 1000)
     run = _run(settings, bank_meta, ledger_meta, combined, status, duration)
-    store.save_run(run, combined, candidates, matches)
+    journals = posting_mod.build_postings(matches, combined) if both else []
+    if both:
+        posting_mod.assert_balanced(journals)
+    store.save_run(run, combined, candidates, matches, journals,
+                   posting_mod.scheme_version())
     summary = _summary(settings, store.get_run(run["run_id"]), combined, candidates, matches)
     summary.update({
         "side": side,

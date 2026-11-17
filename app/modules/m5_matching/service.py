@@ -4,6 +4,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from ...errors import DomainError
+from ..m8_posting import service as posting_service
 from . import solve
 
 
@@ -36,6 +37,7 @@ def run_matching(store, run: dict | None, settings) -> dict:
         raise DomainError("E_NO_CANDIDATES", "还没有候选", 409)
     records = store.records(run["run_id"])
     groups = solve.solve(candidates, records, settings)
-    store.replace_matches(run["run_id"], groups)
+    # 匹配与入账同一事务重建：避免凭证指向被替换掉的旧匹配组。
+    posting_service.rebuild_with_matches(store, run, groups, records, settings)
     store.set_status(run["run_id"], "matched")
     return payload(store, store.get_run(run["run_id"]))

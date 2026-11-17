@@ -5,7 +5,7 @@ from pathlib import Path
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
-PAGES = ("/", "/quarantine", "/candidates", "/matches", "/batches", "/export")
+PAGES = ("/", "/quarantine", "/candidates", "/matches", "/postings", "/batches", "/export")
 
 
 def test_full_pipeline_from_samples(client):
@@ -63,3 +63,20 @@ def test_expected_match_groups_fixture(client, demo):
         for group in expected["groups"]
     ]
     assert observed == wanted
+
+
+def test_posting_flow_end_to_end(client, demo):
+    # 完整入账：凭证与匹配组一一对应、借贷平衡、页面与导出同一版方案。
+    data = client.get("/api/postings").json()
+    assert data["journal_count"] == demo["counts"]["matched_groups"] == 11
+    assert data["stale"] is False
+    for journal in data["journals"]:
+        assert journal["debit_total"] == journal["credit_total"]
+    # 页面与 CSV 导出的凭证号集合一致。
+    csv_text = client.get("/api/export/postings.csv").text
+    page_ids = {journal["journal_id"] for journal in data["journals"]}
+    csv_ids = {line.split(",", 1)[0] for line in csv_text.lstrip("﻿").splitlines()[1:]}
+    assert csv_ids == page_ids
+    manifest = client.get("/api/export/manifest.json").json()
+    assert manifest["posting"]["scheme_version"] == data["scheme_version"]
+    assert manifest["posting"]["line_count"] == data["line_count"]

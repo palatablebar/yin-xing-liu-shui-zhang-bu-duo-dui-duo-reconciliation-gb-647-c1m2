@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}入账{% endblock %}
+{% block body %}
+<main class="page">
+  <header class="page-head">
+    <h1>入账</h1>
+    <span class="page-meta">{{ journals|length }} 张凭证 · {{ line_count }} 条分录</span>
+    <span class="page-meta">借 {{ debit_total|money }} / 贷 {{ credit_total|money }}</span>
+    <span class="chip mono">{{ scheme_version }}</span>
+    <button class="btn" type="button" data-action="postings">正式入账/重算</button>
+    <button class="btn" type="button" data-action="postings-recover">中断恢复</button>
+    <a class="btn" href="/api/export/postings.csv">凭证 CSV</a>
+  </header>
+
+  {% if stale %}
+  <div class="flash ok" role="alert">
+    检测到旧版入账方案（{{ stored_scheme }}），点「中断恢复」按 {{ scheme_version }} 完整方案重建，凭证号与分录数不变。
+  </div>
+  {% endif %}
+
+  {% for journal in journals %}
+  <section class="panel">
+    <h2 class="mono">{{ journal.journal_id }}
+      <span class="chip">{{ journal.tier|tier_label }}</span>
+      <span class="chip">匹配组 {{ journal.match_id }}</span>
+      <span class="chip">{{ journal.line_count }} 条分录</span>
+    </h2>
+    <div class="table-wrap">
+      <table class="grid compact">
+        <thead>
+          <tr>
+            <th>行号</th><th>分录类型</th><th>科目</th>
+            <th class="num">借方</th><th class="num">贷方</th>
+            <th>来源侧</th><th>原始流水/凭证（可追溯）</th><th>摘要</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for line in journal.lines %}
+          <tr>
+            <td class="num mono">{{ line.line_no }}</td>
+            <td>{{ line.line_type|line_type_label }}</td>
+            <td class="mono">{{ line.subject_code }} {{ line.subject_name }}</td>
+            <td class="num mono">{% if line.debit != '0.00' %}{{ line.debit|money }}{% endif %}</td>
+            <td class="num mono">{% if line.credit != '0.00' %}{{ line.credit|money }}{% endif %}</td>
+            <td class="state">{{ line.ref_side }}</td>
+            <td class="mono">{{ line.refs|join(' ') }}</td>
+            <td>{{ line.memo }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <th colspan="3">合计</th>
+            <th class="num mono">{{ journal.debit_total|money }}</th>
+            <th class="num mono">{{ journal.credit_total|money }}</th>
+            <th colspan="3" class="state">
+              银行 {{ journal.bank_refs|length }} 笔 · 凭证 {{ journal.ledger_refs|length }} 张
+              {% if journal.debit_total == journal.credit_total %}· 借贷平衡{% else %}· 不平{% endif %}
+            </th>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </section>
+  {% else %}
+  <section class="panel"><p class="empty">还没有匹配组，先到「匹配」生成匹配组后再入账。</p></section>
+  {% endfor %}
+</main>
+{% endblock %}

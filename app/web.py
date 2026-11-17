@@ -15,6 +15,8 @@ from .modules.m5_matching.subset import TIER_NAMES
 from .modules.m6_diff import differences as differences_mod
 from .modules.m6_diff import history as history_mod
 from .modules.m7_export import service as export_service
+from .modules.m8_posting import posting as posting_mod
+from .modules.m8_posting.posting import LINE_TYPE_LABELS
 
 TEMPLATE_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
@@ -25,6 +27,7 @@ NAV = (
     ("隔离区", "/quarantine"),
     ("候选", "/candidates"),
     ("匹配", "/matches"),
+    ("入账", "/postings"),
     ("批次", "/batches"),
     ("导出", "/export"),
 )
@@ -79,6 +82,10 @@ def tier_label(tier) -> str:
     return TIER_NAMES.get(int(tier), "")
 
 
+def line_type_label(value) -> str:
+    return LINE_TYPE_LABELS.get(str(value), str(value))
+
+
 STATUS_LABELS = {
     "matched": "已匹配",
     "ready": "待匹配",
@@ -115,6 +122,7 @@ def setup(app: FastAPI) -> None:
     templates.env.filters["shortsha"] = short_sha
     templates.env.filters["reason_label"] = reason_label
     templates.env.filters["tier_label"] = tier_label
+    templates.env.filters["line_type_label"] = line_type_label
     templates.env.filters["status_label"] = status_label
     app.state.templates = templates
 
@@ -200,6 +208,29 @@ def setup(app: FastAPI) -> None:
             "fee_total": fee_total,
         })
         return render(request, "matches.html", context)
+
+    @app.get("/postings")
+    def postings_page(request: Request):
+        store = request.app.state.store
+        context = base(request, "入账", "/postings")
+        run = context["run"]
+        state = store.posting_state(run["run_id"]) if run else None
+        journals = store.journals(run["run_id"]) if run else []
+        debit_total = sum((Decimal(item["debit_total"]) for item in journals), Decimal("0.00"))
+        credit_total = sum((Decimal(item["credit_total"]) for item in journals), Decimal("0.00"))
+        line_count = sum(len(item["lines"]) for item in journals)
+        stored_scheme = state["scheme_version"] if state else ""
+        context.update({
+            "journals": journals,
+            "line_count": line_count,
+            "debit_total": debit_total,
+            "credit_total": credit_total,
+            "scheme_version": posting_mod.scheme_version(),
+            "stored_scheme": stored_scheme,
+            "stale": bool(stored_scheme) and stored_scheme != posting_mod.scheme_version(),
+            "line_type_labels": LINE_TYPE_LABELS,
+        })
+        return render(request, "postings.html", context)
 
     @app.get("/batches")
     def batches(request: Request):

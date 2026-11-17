@@ -26,6 +26,17 @@ def get_report(request: Request):
     )
 
 
+@router.get("/api/export/postings.csv")
+def get_postings_report(request: Request):
+    store = request.app.state.store
+    text = service.postings_report(store, store.latest_run())
+    return Response(
+        content=text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="postings.csv"'},
+    )
+
+
 @router.get("/api/export/manifest.json")
 def get_manifest(request: Request):
     store = request.app.state.store

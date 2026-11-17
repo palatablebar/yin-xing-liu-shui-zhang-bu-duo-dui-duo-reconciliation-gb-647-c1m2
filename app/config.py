@@ -10,6 +10,9 @@ from decimal import Decimal
 from pathlib import Path
 
 RULE_VERSION = "2026.11.1"
+# 完整入账方案版本：页面、CSV 导出、运行清单与落库共用同一版本号。
+# 方案变更时升版；旧批次按新版重建（同 run_id 先删后插），不保留净额旧方案。
+POSTING_SCHEME_VERSION = "posting-2026.11.1"
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
 
@@ -31,6 +34,19 @@ ACCOUNTS = {
     "6222-0034": "一般户",
     "6222-0056": "货款户",
 }
+
+# 入账科目登记（完整入账方案的唯一科目来源，页面与导出共用）。
+# - 银行存款科目按银行账户映射，手续费与容差尾差各一个固定科目；
+# - 账簿侧凭证统一挂「待核销往来」科目，保留每张凭证号作为可追溯对象；
+# - 这里不做凭证科目层拆分（见 README 已知不覆盖），只决定最终入账科目。
+BANK_ACCOUNT_SUBJECTS = {
+    "6222-0012": ("100201", "银行存款-基本户"),
+    "6222-0034": ("100202", "银行存款-一般户"),
+    "6222-0056": ("100203", "银行存款-货款户"),
+}
+CLEARING_SUBJECT = ("1131", "待核销往来")
+FEE_EXPENSE_SUBJECT = ("660301", "财务费用-银行手续费")
+GAP_LOSS_SUBJECT = ("671101", "营业外支出-容差尾差")
 
 
 def dec(value) -> Decimal:

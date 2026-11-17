@@ -10,6 +10,7 @@
 - 择一：层级优先（一对一 → 一对多 → 多对一），再按金额差、日期差、业务号升序，取不重叠的组合。
 - 手续费只计银行侧，不进入匹配金额；匹配组按银行金额比例分摊手续费，尾差用最大余额法分到分。
 - 银行合计 = 匹配金额 + 未匹配金额 − 手续费合计；账簿合计 = 匹配金额 + 未匹配金额。
+- 完整入账（M8）：每个匹配组生成一张记账凭证，同科目同方向合并为少量分录，每条分录保留全部原始流水号/凭证号，金额恒等于来源对象之和，禁止净额掩盖核销对象；手续费、容差尾差各自独立成线，逐张凭证借贷平衡。
 
 ## 功能模块
 
@@ -21,7 +22,8 @@
 | M4 候选匹配 | 生成一对一、一对多、多对一候选 | `POST /api/candidates`、页面 `/candidates` |
 | M5 多对多求解 | 求解不重叠匹配组，看手续费分摊 | `POST /api/matches`、页面 `/matches` |
 | M6 差异与批次 | 看两侧守恒、差异归因与历史批次 | `GET /api/differences`、`GET /api/batches`、页面 `/batches` |
-| M7 报告导出 | 导出报告 CSV 与运行清单 JSON | `GET /api/export/report.csv`、`/api/export/manifest.json`、页面 `/export` |
+| M7 报告导出 | 导出报告 CSV、入账凭证 CSV 与运行清单 JSON | `GET /api/export/report.csv`、`/api/export/postings.csv`、`/api/export/manifest.json`、页面 `/export` |
+| M8 正式入账 | 匹配组生成借贷平衡凭证，看科目、分录与来源追溯，中断/旧版恢复 | `GET/POST /api/postings`、`POST /api/postings/recover`、页面 `/postings` |
 
 ## 启动
 
@@ -38,7 +40,8 @@ docker compose up -d --build
 3. 打开「候选」，核对一对一 7 条、一对多 2 条、多对一 2 条。
 4. 打开「匹配」，看 11 组匹配与手续费分摊合计 22.31 元。
 5. 打开「批次」，核对银行笔数、账簿笔数、手续费分摊、匹配差额四项平衡。
-6. 打开「导出」，下载报告 CSV 与运行清单 JSON。
+6. 打开「入账」，逐张核对记账凭证：少量分录但保留每张被核销凭证号，借贷合计相等；中断后点「中断恢复」可重建同一版方案。
+7. 打开「导出」，下载报告 CSV、入账凭证 CSV 与运行清单 JSON（清单带入账方案版本）。
 
 ## 测试
 
@@ -52,19 +55,28 @@ docker compose exec -T app python -m pytest -q
 - `/quarantine` 隔离区。
 - `/candidates` 候选清单。
 - `/matches` 匹配组。
+- `/postings` 入账凭证（每张匹配组一张，分录带来源号，可下钻到原始流水/凭证）。
 - `/batches` 对账与批次历史。
 - `/export` 导出。
 
 ## 目录
 
 ```text
-app/            平台层与七个功能模块
-app/templates/  base + 六个页面
+app/            平台层与八个功能模块
+app/templates/  base + 七个页面
 app/static/     theme / layout / components + 三个脚本
 docs/           DEPTH、DATA-DICTIONARY、RUNBOOK
 sample_data/    六份脏样例与一份空白样例
 tests/          模块测试、端到端、不变量
 ```
+
+## 入账方案（M8）
+
+- 一个匹配组一张记账凭证，凭证号由匹配组确定性派生；同科目同方向的来源对象合并成一条分录，每张凭证最多 5 条（银行存款、待核销往来、手续费现金、手续费费用、容差尾差）。
+- 不轧差：每条分录的 `原始流水/凭证` 列保留全部被核销对象，分录金额恒等于这些对象金额之和，审计可从最终科目逐笔追溯到原始流水与凭证。
+- 手续费按实际发生额单独成对（借手续费费用、贷银行存款），不并进本金；组内容差尾差挂 `671101 营业外支出-容差尾差`，不靠轧平掩盖。
+- 页面 `/postings`、导出 `/api/export/postings.csv`、运行清单都读同一张 `journals/journal_lines` 表，方案版本号 `posting-2026.11.1` 随清单导出。
+- 入账与匹配/采信在同一事务先删后插：中断整体回滚保留旧版完整方案；`POST /api/postings/recover` 按同一确定性方案重建，同 run_id 重跑不新增、不丢失分录。
 
 ## 已知不覆盖
 

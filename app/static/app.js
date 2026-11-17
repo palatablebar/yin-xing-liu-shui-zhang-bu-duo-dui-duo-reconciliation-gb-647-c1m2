@@ -38,6 +38,8 @@ async function runAction(name) {
     demo: "/api/demo/run",
     candidates: "/api/candidates",
     matches: "/api/matches",
+    postings: "/api/postings",
+    "postings-recover": "/api/postings/recover",
   };
   const url = urls[name];
   if (!url) return;

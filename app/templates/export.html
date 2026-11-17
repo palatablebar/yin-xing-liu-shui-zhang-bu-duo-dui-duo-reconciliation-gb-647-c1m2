@@ -10,9 +10,18 @@
     <h2>文件</h2>
     <div class="links">
       <a class="btn" href="/api/export/report.csv">报告 CSV</a>
+      <a class="btn" href="/api/export/postings.csv">入账凭证 CSV</a>
       <a class="btn" href="/api/export/manifest.json">运行清单</a>
       <a class="btn" href="/api/quarantine.csv">隔离 CSV</a>
     </div>
+    {% if summary.posting %}
+    <p class="empty">
+      入账方案 <span class="mono">{{ summary.posting.scheme_version }}</span>
+      · 凭证 {{ summary.posting.journal_count }} 张
+      · 分录 {{ summary.posting.line_count }} 条
+      {% if summary.posting.stale %}· <strong>旧版数据，请到「入账」页恢复</strong>{% endif %}
+    </p>
+    {% endif %}
   </section>
   <section class="panel">
     <h2>合计</h2>
